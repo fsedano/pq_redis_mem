@@ -1,250 +1,228 @@
-// priorityqueue_test.go
 package main
 
 import (
 	"fmt"
 	"reflect"
 	"testing"
+
+	"fsedano.net/pq/priorityqueue" // Adjust this import path
 )
 
-func TestMultiPriorityQueue(t *testing.T) {
-	// Test creation of new MultiPriorityQueue
-	t.Run("NewMultiPriorityQueue", func(t *testing.T) {
-		var mpq PriorityQueuer = NewMultiPriorityQueue()
-		if mpq == nil {
-			t.Error("NewMultiPriorityQueue should return a non-nil value")
-		}
-	})
+func TestPriorityQueue(t *testing.T) {
+	tests := []struct {
+		name string
+		pq   priorityqueue.PriorityQueuer
+	}{
+		{"SlicePQ", priorityqueue.NewMultiPriorityQueue()},
+		{"RedisPQ", priorityqueue.NewRedisPriorityQueue("localhost:6379", "", 0)},
+	}
 
-	// Test adding queues
-	t.Run("AddQueue", func(t *testing.T) {
-		var mpq PriorityQueuer = NewMultiPriorityQueue()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Run("NewPriorityQueue", func(t *testing.T) {
+				if tt.pq == nil {
+					t.Error("New priority queue should return a non-nil value")
+				}
+			})
 
-		// Add new queue
-		err := mpq.AddQueue("test")
-		if err != nil {
-			t.Errorf("AddQueue failed: %v", err)
-		}
+			t.Run("AddQueue", func(t *testing.T) {
+				err := tt.pq.AddQueue("test")
+				if err != nil {
+					t.Errorf("AddQueue failed: %v", err)
+				}
+			})
 
-		// Try adding duplicate queue
-		err = mpq.AddQueue("test")
-		if err == nil {
-			t.Error("AddQueue should fail on duplicate queue name")
-		}
-	})
+			t.Run("Enqueue", func(t *testing.T) {
+				tt.pq.AddQueue("test")
+				err := tt.pq.Enqueue("test", "item1", 0)
+				if err != nil {
+					t.Errorf("Enqueue failed: %v", err)
+				}
 
-	// Test enqueue operation
-	t.Run("Enqueue", func(t *testing.T) {
-		var mpq PriorityQueuer = NewMultiPriorityQueue()
-		mpq.AddQueue("test")
+				err = tt.pq.Enqueue("test", "item2", 10)
+				if err == nil {
+					t.Error("Enqueue should fail with priority > 9")
+				}
 
-		// Valid priority
-		err := mpq.Enqueue("test", "item1", 0)
-		if err != nil {
-			t.Errorf("Enqueue failed: %v", err)
-		}
+				err = tt.pq.Enqueue("nonexistent", "item3", 0)
+				if err == nil && tt.name == "SlicePQ" { // Redis doesn't require queue existence
+					t.Error("Enqueue should fail with non-existent queue for SlicePQ")
+				}
+			})
 
-		// Invalid priority
-		err = mpq.Enqueue("test", "item2", 10)
-		if err == nil {
-			t.Error("Enqueue should fail with priority > 9")
-		}
+			t.Run("Dequeue", func(t *testing.T) {
+				tt.pq.AddQueue("test")
+				_, err := tt.pq.Dequeue("test")
+				if err == nil {
+					t.Error("Dequeue should fail on empty queue")
+				}
 
-		// Non-existent queue
-		err = mpq.Enqueue("nonexistent", "item3", 0)
-		if err == nil {
-			t.Error("Enqueue should fail with non-existent queue")
-		}
-	})
+				tt.pq.Enqueue("test", "low", 5)
+				tt.pq.Enqueue("test", "high", 0)
+				tt.pq.Enqueue("test", "medium", 2)
 
-	// Test dequeue operation
-	t.Run("Dequeue", func(t *testing.T) {
-		var mpq PriorityQueuer = NewMultiPriorityQueue()
-		mpq.AddQueue("test")
+				item, err := tt.pq.Dequeue("test")
+				if err != nil || item != "high" {
+					t.Errorf("Dequeue should return highest priority item first, got %v", item)
+				}
 
-		// Empty queue
-		_, err := mpq.Dequeue("test")
-		if err == nil {
-			t.Error("Dequeue should fail on empty queue")
-		}
+				item, err = tt.pq.Dequeue("test")
+				if err != nil || item != "medium" {
+					t.Errorf("Dequeue should return medium priority next, got %v", item)
+				}
+			})
 
-		// Add items and test priority order
-		mpq.Enqueue("test", "low", 5)
-		mpq.Enqueue("test", "high", 0)
-		mpq.Enqueue("test", "medium", 2)
+			t.Run("IsEmpty", func(t *testing.T) {
+				tt.pq.AddQueue("test")
+				empty, err := tt.pq.IsEmpty("test")
+				if err != nil || !empty {
+					t.Error("New queue should be empty")
+				}
 
-		item, err := mpq.Dequeue("test")
-		if err != nil || item != "high" {
-			t.Errorf("Dequeue should return highest priority item first, got %v", item)
-		}
+				tt.pq.Enqueue("test", "item", 0)
+				empty, err = tt.pq.IsEmpty("test")
+				if err != nil || empty {
+					t.Error("Queue with item should not be empty")
+				}
+			})
 
-		item, err = mpq.Dequeue("test")
-		if err != nil || item != "medium" {
-			t.Errorf("Dequeue should return medium priority next, got %v", item)
-		}
-	})
+			t.Run("ListContents", func(t *testing.T) {
+				tt.pq.AddQueue("test")
+				contents, err := tt.pq.ListContents("test")
+				if err != nil || len(contents) != 0 {
+					t.Error("Empty queue should return empty contents")
+				}
 
-	// Test IsEmpty
-	t.Run("IsEmpty", func(t *testing.T) {
-		var mpq PriorityQueuer = NewMultiPriorityQueue()
-		mpq.AddQueue("test")
+				tt.pq.Enqueue("test", "high", 0)
+				tt.pq.Enqueue("test", "medium1", 2)
+				tt.pq.Enqueue("test", "medium2", 2)
 
-		empty, err := mpq.IsEmpty("test")
-		if err != nil || !empty {
-			t.Error("New queue should be empty")
-		}
+				contents, err = tt.pq.ListContents("test")
+				if err != nil {
+					t.Errorf("ListContents failed: %v", err)
+				}
 
-		mpq.Enqueue("test", "item", 0)
-		empty, err = mpq.IsEmpty("test")
-		if err != nil || empty {
-			t.Error("Queue with item should not be empty")
-		}
-	})
+				expected := map[int][]interface{}{
+					0: {"high"},
+					2: {"medium1", "medium2"},
+				}
+				if !reflect.DeepEqual(contents, expected) {
+					t.Errorf("ListContents wrong result. Got %v, want %v", contents, expected)
+				}
+			})
 
-	// Test ListContents
-	t.Run("ListContents", func(t *testing.T) {
-		var mpq PriorityQueuer = NewMultiPriorityQueue()
-		mpq.AddQueue("test")
+			t.Run("GetPosition", func(t *testing.T) {
+				tt.pq.AddQueue("test")
+				priority, pos, err := tt.pq.GetPosition("test", "missing")
+				if err == nil || priority != -1 || pos != -1 {
+					t.Error("GetPosition should fail for non-existent item")
+				}
 
-		// Empty queue
-		contents, err := mpq.ListContents("test")
-		if err != nil || len(contents) != 0 {
-			t.Error("Empty queue should return empty contents")
-		}
+				tt.pq.Enqueue("test", "first", 0)
+				tt.pq.Enqueue("test", "second", 0)
+				tt.pq.Enqueue("test", "third", 2)
 
-		// Add items
-		mpq.Enqueue("test", "high", 0)
-		mpq.Enqueue("test", "medium1", 2)
-		mpq.Enqueue("test", "medium2", 2)
+				priority, pos, err = tt.pq.GetPosition("test", "first")
+				if err != nil || priority != 0 || pos != 0 {
+					t.Errorf("Wrong position for 'first': %d, %d", priority, pos)
+				}
 
-		contents, err = mpq.ListContents("test")
-		if err != nil {
-			t.Errorf("ListContents failed: %v", err)
-		}
+				priority, pos, err = tt.pq.GetPosition("test", "second")
+				if err != nil || priority != 0 || pos != 1 {
+					t.Errorf("Wrong position for 'second': %d, %d", priority, pos)
+				}
 
-		expected := map[int][]interface{}{
-			0: {"high"},
-			2: {"medium1", "medium2"},
-		}
-		if !reflect.DeepEqual(contents, expected) {
-			t.Errorf("ListContents wrong result. Got %v, want %v", contents, expected)
-		}
-	})
+				priority, pos, err = tt.pq.GetPosition("test", "third")
+				if err != nil || priority != 2 || pos != 0 {
+					t.Errorf("Wrong position for 'third': %d, %d", priority, pos)
+				}
+			})
 
-	// Test GetPosition
-	t.Run("GetPosition", func(t *testing.T) {
-		var mpq PriorityQueuer = NewMultiPriorityQueue()
-		mpq.AddQueue("test")
+			t.Run("InsertAtTop", func(t *testing.T) {
+				tt.pq.AddQueue("test")
+				err := tt.pq.InsertAtTop("test", "item", 10)
+				if err == nil {
+					t.Error("InsertAtTop should fail with priority > 9")
+				}
 
-		// Non-existent item
-		priority, pos, err := mpq.GetPosition("test", "missing")
-		if err == nil || priority != -1 || pos != -1 {
-			t.Error("GetPosition should fail for non-existent item")
-		}
+				err = tt.pq.InsertAtTop("test", "urgent", 0)
+				if err != nil {
+					t.Errorf("InsertAtTop failed: %v", err)
+				}
 
-		// Add items and check positions
-		mpq.Enqueue("test", "first", 0)
-		mpq.Enqueue("test", "second", 0)
-		mpq.Enqueue("test", "third", 2)
+				priority, pos, err := tt.pq.GetPosition("test", "urgent")
+				if err != nil || priority != 0 || pos != 0 {
+					t.Errorf("InsertAtTop item should be at priority 0, position 0, got %d, %d", priority, pos)
+				}
 
-		priority, pos, err = mpq.GetPosition("test", "first")
-		if err != nil || priority != 0 || pos != 0 {
-			t.Errorf("Wrong position for 'first': %d, %d", priority, pos)
-		}
+				tt.pq.Enqueue("test", "normal", 0)
+				tt.pq.Enqueue("test", "medium", 2)
+				tt.pq.InsertAtTop("test", "topmost", 0)
+				tt.pq.InsertAtTop("test", "urgent_medium", 2)
 
-		priority, pos, err = mpq.GetPosition("test", "second")
-		if err != nil || priority != 0 || pos != 1 {
-			t.Errorf("Wrong position for 'second': %d, %d", priority, pos)
-		}
+				item, err := tt.pq.Dequeue("test")
+				if err != nil || item != "topmost" {
+					t.Errorf("InsertAtTop item at priority 0 should be dequeued first, got %v", item)
+				}
 
-		priority, pos, err = mpq.GetPosition("test", "third")
-		if err != nil || priority != 2 || pos != 0 {
-			t.Errorf("Wrong position for 'third': %d, %d", priority, pos)
-		}
-	})
+				item, err = tt.pq.Dequeue("test")
+				if err != nil || item != "urgent" {
+					t.Errorf("Second priority 0 item should be next, got %v", item)
+				}
 
-	// Test InsertAtTop
-	t.Run("InsertAtTop", func(t *testing.T) {
-		var mpq PriorityQueuer = NewMultiPriorityQueue()
-		mpq.AddQueue("test")
-
-		// Test invalid priority
-		err := mpq.InsertAtTop("test", "item", 10)
-		if err == nil {
-			t.Error("InsertAtTop should fail with priority > 9")
-		}
-
-		// Insert into empty queue at priority 0
-		err = mpq.InsertAtTop("test", "urgent", 0)
-		if err != nil {
-			t.Errorf("InsertAtTop failed: %v", err)
-		}
-
-		// Check it's at priority 0, position 0
-		priority, pos, err := mpq.GetPosition("test", "urgent")
-		if err != nil || priority != 0 || pos != 0 {
-			t.Errorf("InsertAtTop item should be at priority 0, position 0, got %d, %d", priority, pos)
-		}
-
-		// Add more items at different priorities
-		mpq.Enqueue("test", "normal", 0)
-		mpq.Enqueue("test", "medium", 2)
-		mpq.InsertAtTop("test", "topmost", 0)
-		mpq.InsertAtTop("test", "urgent_medium", 2)
-
-		// Verify priority 0 order
-		item, err := mpq.Dequeue("test")
-		if err != nil || item != "topmost" {
-			t.Errorf("InsertAtTop item at priority 0 should be dequeued first, got %v", item)
-		}
-
-		item, err = mpq.Dequeue("test")
-		if err != nil || item != "urgent" {
-			t.Errorf("Second priority 0 item should be next, got %v", item)
-		}
-
-		// Verify priority 2 order
-		mpq.Dequeue("test") // Remove "normal" from priority 0
-		item, err = mpq.Dequeue("test")
-		if err != nil || item != "urgent_medium" {
-			t.Errorf("InsertAtTop item at priority 2 should be first in its level, got %v", item)
-		}
-
-		// Test non-existent queue
-		err = mpq.InsertAtTop("nonexistent", "test", 0)
-		if err == nil {
-			t.Error("InsertAtTop should fail with non-existent queue")
-		}
-	})
+				tt.pq.Dequeue("test") // Remove "normal"
+				item, err = tt.pq.Dequeue("test")
+				if err != nil || item != "urgent_medium" {
+					t.Errorf("InsertAtTop item at priority 2 should be first in its level, got %v", item)
+				}
+			})
+		})
+	}
 }
 
-// Benchmark for Enqueue operation
 func BenchmarkEnqueue(b *testing.B) {
-	var mpq PriorityQueuer = NewMultiPriorityQueue()
-	mpq.AddQueue("test")
+	pqs := []struct {
+		name string
+		pq   priorityqueue.PriorityQueuer
+	}{
+		{"SlicePQ", priorityqueue.NewMultiPriorityQueue()},
+		{"RedisPQ", priorityqueue.NewRedisPriorityQueue("localhost:6379", "", 0)},
+	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		mpq.Enqueue("test", fmt.Sprintf("item%d", i), i%10)
+	for _, pq := range pqs {
+		b.Run(pq.name, func(b *testing.B) {
+			pq.pq.AddQueue("test")
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				pq.pq.Enqueue("test", fmt.Sprintf("item%d", i), i%10)
+			}
+		})
 	}
 }
 
-// Benchmark for Dequeue operation
 func BenchmarkDequeue(b *testing.B) {
-	var mpq PriorityQueuer = NewMultiPriorityQueue()
-	mpq.AddQueue("test")
-
-	// Fill queue
-	for i := 0; i < 1000; i++ {
-		if i%2 == 0 {
-			mpq.Enqueue("test", fmt.Sprintf("item%d", i), i%10)
-		} else {
-			mpq.InsertAtTop("test", fmt.Sprintf("item%d", i), i%10)
-		}
+	pqs := []struct {
+		name string
+		pq   priorityqueue.PriorityQueuer
+	}{
+		{"SlicePQ", priorityqueue.NewMultiPriorityQueue()},
+		{"RedisPQ", priorityqueue.NewRedisPriorityQueue("localhost:6379", "", 0)},
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		mpq.Dequeue("test")
+	for _, pq := range pqs {
+		b.Run(pq.name, func(b *testing.B) {
+			pq.pq.AddQueue("test")
+			for i := 0; i < 1000; i++ {
+				if i%2 == 0 {
+					pq.pq.Enqueue("test", fmt.Sprintf("item%d", i), i%10)
+				} else {
+					pq.pq.InsertAtTop("test", fmt.Sprintf("item%d", i), i%10)
+				}
+			}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				pq.pq.Dequeue("test")
+			}
+		})
 	}
 }
