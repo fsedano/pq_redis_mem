@@ -17,7 +17,7 @@ type RedisPriorityQueue struct {
 
 // NewRedisPriorityQueue creates a new Redis-based priority queue
 func NewRedisPriorityQueue(addr, password string, db int) PriorityQueuer {
-	return &RedisPriorityQueue{
+	rpq := &RedisPriorityQueue{
 		client: redis.NewClient(&redis.Options{
 			Addr:     addr,
 			Password: password,
@@ -25,6 +25,26 @@ func NewRedisPriorityQueue(addr, password string, db int) PriorityQueuer {
 		}),
 		ctx: context.Background(),
 	}
+	// Verify connection
+	if err := rpq.client.Ping(rpq.ctx).Err(); err != nil {
+		panic(fmt.Sprintf("failed to connect to Redis at %s: %v", addr, err))
+	}
+	return rpq
+}
+
+// ClearQueues removes specified queues from Redis
+func (rpq *RedisPriorityQueue) ClearQueues(queues ...string) error {
+	rpq.mutex.Lock()
+	defer rpq.mutex.Unlock()
+
+	if len(queues) == 0 {
+		return nil
+	}
+	_, err := rpq.client.Del(rpq.ctx, queues...).Result()
+	if err != nil {
+		return fmt.Errorf("redis error clearing queues: %v", err)
+	}
+	return nil
 }
 
 func (rpq *RedisPriorityQueue) AddQueue(name string) error {
@@ -82,8 +102,10 @@ func (rpq *RedisPriorityQueue) ListContents(queueName string) (map[int][]interfa
 
 	contents := make(map[int][]interface{})
 	for _, member := range members {
-		priority := int(member.Score)
-		contents[priority] = append(contents[priority], member.Member)
+		priority := int(member.Score + 0.5) // Round to handle micro-decrements
+		if priority >= 0 && priority <= 9 {
+			contents[priority] = append(contents[priority], member.Member)
+		}
 	}
 	return contents, nil
 }
@@ -100,10 +122,10 @@ func (rpq *RedisPriorityQueue) GetPosition(queueName string, value interface{}) 
 	valueStr := fmt.Sprintf("%v", value)
 	for i, member := range members {
 		if member.Member == valueStr {
-			priority := int(member.Score)
+			priority := int(member.Score + 0.5) // Round to nearest integer
 			pos := 0
 			for j := 0; j < i; j++ {
-				if int(members[j].Score) == priority {
+				if int(members[j].Score+0.5) == priority {
 					pos++
 				}
 			}
@@ -129,4 +151,19 @@ func (rpq *RedisPriorityQueue) InsertAtTop(queueName string, value interface{}, 
 		Score:  score,
 		Member: valueStr,
 	}).Err()
+}
+
+func (rpq *RedisPriorityQueue) DeleteItem(queueName string, value interface{}) error {
+	rpq.mutex.Lock()
+	defer rpq.mutex.Unlock()
+
+	valueStr := fmt.Sprintf("%v", value)
+	count, err := rpq.client.ZRem(rpq.ctx, queueName, valueStr).Result()
+	if err != nil {
+		return fmt.Errorf("redis error: %v", err)
+	}
+	if count == 0 {
+		return fmt.Errorf("value '%v' not found in queue '%s'", value, queueName)
+	}
+	return nil
 }

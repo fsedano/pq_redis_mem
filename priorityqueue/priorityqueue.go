@@ -14,6 +14,7 @@ type PriorityQueuer interface {
 	ListContents(queueName string) (map[int][]interface{}, error)
 	GetPosition(queueName string, value interface{}) (int, int, error)
 	InsertAtTop(queueName string, value interface{}, priority int) error
+	DeleteItem(queueName string, value interface{}) error
 }
 
 // Item represents an element in the priority queue
@@ -149,7 +150,6 @@ func (mpq *MultiPriorityQueue) ListContents(queueName string) (map[int][]interfa
 			contents[priority] = values
 		}
 	}
-
 	return contents, nil
 }
 
@@ -165,14 +165,14 @@ func (mpq *MultiPriorityQueue) GetPosition(queueName string, value interface{}) 
 	pq.mutex.Lock()
 	defer pq.mutex.Unlock()
 
+	valueStr := fmt.Sprintf("%v", value)
 	for priority := 0; priority < 10; priority++ {
 		for pos, item := range pq.queues[priority] {
-			if fmt.Sprintf("%v", item.Value) == fmt.Sprintf("%v", value) {
+			if fmt.Sprintf("%v", item.Value) == valueStr {
 				return priority, pos, nil
 			}
 		}
 	}
-
 	return -1, -1, fmt.Errorf("value '%v' not found in queue '%s'", value, queueName)
 }
 
@@ -194,4 +194,28 @@ func (mpq *MultiPriorityQueue) InsertAtTop(queueName string, value interface{}, 
 
 	pq.queues[priority] = append([]Item{{Value: value, Priority: priority}}, pq.queues[priority]...)
 	return nil
+}
+
+func (mpq *MultiPriorityQueue) DeleteItem(queueName string, value interface{}) error {
+	mpq.mutex.Lock()
+	pq, exists := mpq.queues[queueName]
+	mpq.mutex.Unlock()
+
+	if !exists {
+		return fmt.Errorf("queue '%s' does not exist", queueName)
+	}
+
+	pq.mutex.Lock()
+	defer pq.mutex.Unlock()
+
+	valueStr := fmt.Sprintf("%v", value)
+	for priority := 0; priority < 10; priority++ {
+		for i, item := range pq.queues[priority] {
+			if fmt.Sprintf("%v", item.Value) == valueStr {
+				pq.queues[priority] = append(pq.queues[priority][:i], pq.queues[priority][i+1:]...)
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("value '%v' not found in queue '%s'", value, queueName)
 }
